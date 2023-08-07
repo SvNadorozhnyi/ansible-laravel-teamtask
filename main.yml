@@ -1,1 +1,129 @@
 ---
+- name: Deploy Laravel Application with Apache
+  hosts: server
+  become: yes
+  become_user: root
+  vars:
+    app_directory: /var/www/app-for-devops
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Remove libnode-dev
+      apt:
+        name: libnode-dev
+        state: absent
+        force: yes
+      ignore_errors: yes
+
+    - name: Remove libnode72
+      apt:
+        name: libnode72
+        state: absent
+        force: yes
+        purge: yes
+        allow_unauthenticated: yes
+      ignore_errors: yes
+
+    - name: Add Node.js repository
+      shell: curl -fsSL https://deb.nodesource.com/setup_16.x | sudo -E bash -
+      args:
+        executable: /bin/bash
+
+    - name: Install Node.js
+      apt:
+        name: nodejs
+        state: present
+      ignore_errors: yes
+
+    - name: install packages
+      apt:
+        pkg:
+          - php
+          - php-xml
+          - php-mysql
+          - libapache2-mod-php
+          - git
+          - zip
+          - unzip
+          - php-curl
+          - composer
+      become: yes
+
+    - name: Create application directory
+      file:
+        path: "{{ app_directory }}"
+        state: directory
+      become: yes
+
+    - name: Clone the repository
+      git:
+        repo: https://github.com/Practical-DevOps/app-for-devops.git
+        dest: "{{ app_directory }}"
+        version: main
+      become: yes
+
+    - name: Download and installs all libs and dependencies
+      community.general.composer:
+        command: install
+        working_dir: "{{ app_directory }}"
+      become: yes
+
+    - name: Change ownership of the directory
+      ansible.builtin.shell: |
+        sudo chown -R $USER /var/www/app-for-devops
+      args:
+        executable: /bin/bash
+
+    - name: Set directory permissions
+      ansible.builtin.shell: |
+        sudo chmod -R 777 /var/www/app-for-devops/storage
+      args:
+        executable: /bin/bash
+
+    - name: Install frontend dependencies
+      command: npm install
+      args:
+        chdir: "{{ app_directory }}"
+
+    - name: Build frontend assets
+      ansible.builtin.shell: npm run build
+      args:
+        chdir: "{{ app_directory }}"
+
+    - name: Copy Apache virtual host configuration
+      template:
+        src: ./template/server.conf
+        dest: /etc/apache2/sites-available/app-for-devops.conf
+
+    - name: Enable the virtual host
+      command: a2ensite app-for-devops.conf
+
+    - name: Disable default virtual host
+      command: a2dissite 000-default
+      notify:
+        - Reload Apache
+
+    - name: Rename .env.example to .env
+      command: mv /var/www/app-for-devops/.env.example /var/www/app-for-devops/.env
+
+    - name: Generate Laravel key
+      command: php artisan key:generate
+      args:
+        chdir: /var/www/app-for-devops
+
+    - name: Generate Laravel application key
+      become: yes
+      command: php /var/www/app-for-devops/artisan key:generate
+
+    - name: Run Laravel migrations
+      become: yes
+      command: php /var/www/app-for-devops/artisan migrate
+
+  handlers:
+    - name: Reload Apache
+      systemd:
+        name: apache2
+        state: restarted
