@@ -1,1 +1,246 @@
 ---
+- name: Install and configure MariaDB
+  hosts: db
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+  become: true
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+      become: true
+
+
+    - name: Install MySQL client for Python
+      apt:
+        name: python3-mysqldb
+        state: present
+      become: true
+
+    - name: Install MySQL client
+      apt:
+        name: mysql-client
+        state: present
+      become: true
+
+    - name: Install mysqldump
+      apt:
+        name: mariadb-client
+        state: present
+      become: true
+
+    - name: Install MariaDB
+      apt:
+        name: mariadb-server
+        state: present
+
+    - name: secure mariadb
+      become: yes
+      expect:
+        command: mysql_secure_installation
+        responses:
+         'Enter current password for root': ''
+         'Set root password': 'n'
+         'Remove anonymous users': 'y'
+         'Disallow root login remotely': 'y'
+         'Remove test database': 'y'
+         'Reload privilege tables now': 'y'
+        timeout: 1
+      register: secure_mariadb
+      failed_when: "'... Failed!' in secure_mariadb.stdout_lines"
+
+    - name: Configure MariaDB to listen on all IP addresses
+      lineinfile:
+        dest: /etc/mysql/mariadb.conf.d/50-server.cnf
+        regexp: '^bind-address'
+        line: "bind-address = 0.0.0.0"
+
+    - name: Create a db
+      community.mysql.mysql_db:
+        name: "{{ db_name }}"
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+      become: true
+
+    - name: Allow remote access for db_user
+      mysql_user:
+        name: "{{ db_user }}"
+        password: "{{ db_pass }}"
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+        login_user: root
+        login_password: "{{ db_pass }}"
+        priv: "{{ db_name }}.*:ALL"
+        host: "%"
+        state: present
+
+    - name: Restart MariaDB
+      service:
+        name: mariadb
+        state: restarted
+
+- name: Deploy Laravel Application with Apache
+  hosts: server
+  become: yes
+  become_user: root
+  vars:
+    app_directory: /var/www/app-for-devops
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Remove libnode-dev
+      apt:
+        name: libnode-dev
+        state: absent
+        force: yes
+      ignore_errors: yes
+
+    - name: Remove libnode72
+      apt:
+        name: libnode72
+        state: absent
+        force: yes
+        purge: yes
+        allow_unauthenticated: yes
+      ignore_errors: yes
+
+    - name: Add Node.js repository
+      shell: curl -fsSL https://deb.nodesource.com/setup_16.x | sudo -E bash -
+      args:
+        executable: /bin/bash
+
+    - name: Install Node.js
+      apt:
+        name: nodejs
+        state: present
+      ignore_errors: yes
+
+    - name: install packages
+      apt:
+        pkg:
+          - php
+          - php-xml
+          - php-mysql
+          - libapache2-mod-php
+          - git
+          - zip
+          - unzip
+          - php-curl
+          - composer
+      become: yes
+
+    - name: Create application directory
+      file:
+        path: "{{ app_directory }}"
+        state: directory
+      become: yes
+
+    - name: Clone the repository
+      git:
+        repo: https://github.com/Practical-DevOps/app-for-devops.git
+        dest: "{{ app_directory }}"
+        version: main
+      become: yes
+
+    - name: Download and installs all libs and dependencies
+      community.general.composer:
+        command: install
+        working_dir: "{{ app_directory }}"
+      become: yes
+
+    - name: Change ownership of the directory
+      ansible.builtin.shell: |
+        sudo chown -R $USER /var/www/app-for-devops
+      args:
+        executable: /bin/bash
+
+    - name: Set directory permissions
+      ansible.builtin.shell: |
+        sudo chmod -R 777 /var/www/app-for-devops/storage
+      args:
+        executable: /bin/bash
+
+    - name: Install frontend dependencies
+      command: npm install
+      args:
+        chdir: "{{ app_directory }}"
+
+    - name: Build frontend assets
+      ansible.builtin.shell: npm run build
+      args:
+        chdir: "{{ app_directory }}"
+    
+    - name: Get your IP address
+      shell: dig +short myip.opendns.com @resolver1.opendns.com
+      register: my_ip
+
+    - name: Create virtual host file
+      copy:
+        content: |
+          <VirtualHost *:80>
+              ServerName {{ my_ip.stdout }}
+              ServerAlias myapp
+              DocumentRoot /var/www/app-for-devops/public
+
+              <Directory /var/www/app-for-devops/public>
+                  AllowOverride All
+              </Directory>
+          </VirtualHost>
+        dest: /etc/apache2/sites-available/app-for-devops.conf
+
+    - name: Enable the virtual host
+      command: a2ensite app-for-devops.conf
+
+    - name: Disable default virtual host
+      command: a2dissite 000-default
+      notify:
+        - Reload Apache
+
+    - name: Enable Apache Rewrite Module
+      ansible.builtin.command: a2enmod rewrite
+      notify:
+        - Reload Apache
+
+    - name: Rename .env.example to .env
+      command: mv /var/www/app-for-devops/.env.example /var/www/app-for-devops/.env
+
+    - name: Generate Laravel key
+      command: php artisan key:generate
+      args:
+        chdir: /var/www/app-for-devops
+    
+    - name: Update .env DB_HOST
+      lineinfile:
+        path: /var/www/app-for-devops/.env
+        regexp: '^DB_HOST='
+        line: 'DB_HOST={{ db_host }}'
+
+    - name: Update .env DB_DATABASE
+      lineinfile:
+        path: /var/www/app-for-devops/.env
+        regexp: '^DB_DATABASE='
+        line: 'DB_DATABASE={{ db_name }}'
+
+    - name: Update .env DB_USERNAME
+      lineinfile:
+        path: /var/www/app-for-devops/.env
+        regexp: '^DB_USERNAME='
+        line: 'DB_USERNAME={{ db_user }}'
+
+    - name: Update .env DB_PASSWORD
+      lineinfile:
+        path: /var/www/app-for-devops/.env
+        regexp: '^DB_PASSWORD='
+        line: 'DB_PASSWORD={{ db_pass }}'
+
+    - name: Make migration
+      command: php artisan migrate
+      args:
+        chdir: /var/www/app-for-devops
+
+  handlers:
+    - name: Reload Apache
+      systemd:
+        name: apache2
+        state: restarted
