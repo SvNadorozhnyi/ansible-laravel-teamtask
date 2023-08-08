@@ -1,4 +1,82 @@
 ---
+- name: Install and configure MariaDB
+  hosts: db
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+  become: true
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+      become: true
+
+
+    - name: Install MySQL client for Python
+      apt:
+        name: python3-mysqldb
+        state: present
+      become: true
+
+    - name: Install MySQL client
+      apt:
+        name: mysql-client
+        state: present
+      become: true
+
+    - name: Install mysqldump
+      apt:
+        name: mariadb-client
+        state: present
+      become: true
+
+    - name: Install MariaDB
+      apt:
+        name: mariadb-server
+        state: present
+
+    - name: secure mariadb
+      become: yes
+      expect:
+        command: mysql_secure_installation
+        responses:
+         'Enter current password for root': ''
+         'Set root password': 'n'
+         'Remove anonymous users': 'y'
+         'Disallow root login remotely': 'y'
+         'Remove test database': 'y'
+         'Reload privilege tables now': 'y'
+        timeout: 1
+      register: secure_mariadb
+      failed_when: "'... Failed!' in secure_mariadb.stdout_lines"
+
+    - name: Configure MariaDB to listen on all IP addresses
+      lineinfile:
+        dest: /etc/mysql/mariadb.conf.d/50-server.cnf
+        regexp: '^bind-address'
+        line: "bind-address = 0.0.0.0"
+
+    - name: Create a db
+      community.mysql.mysql_db:
+        name: "{{ db_name }}"
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+      become: true
+
+    - name: Allow remote access for db_user
+      mysql_user:
+        name: "{{ db_user }}"
+        password: "{{ db_pass }}"
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+        login_user: root
+        login_password: "{{ db_pass }}"
+        priv: "{{ db_name }}.*:ALL"
+        host: "%"
+        state: present
+
+    - name: Restart MariaDB
+      service:
+        name: mariadb
+        state: restarted
+
 - name: Deploy Laravel Application with Apache
   hosts: server
   become: yes
@@ -106,6 +184,11 @@
       notify:
         - Reload Apache
 
+    - name: Enable Apache Rewrite Module
+      ansible.builtin.command: a2enmod rewrite
+      notify:
+        - Reload Apache
+
     - name: Rename .env.example to .env
       command: mv /var/www/app-for-devops/.env.example /var/www/app-for-devops/.env
 
@@ -113,14 +196,35 @@
       command: php artisan key:generate
       args:
         chdir: /var/www/app-for-devops
+    
+    - name: Update DB_HOST
+      lineinfile:
+        path: /var/www/app-for-devops/.env
+        regexp: '^DB_HOST='
+        line: 'DB_HOST={{ db_host }}'
 
-    - name: Generate Laravel application key
-      become: yes
-      command: php /var/www/app-for-devops/artisan key:generate
+    - name: Update DB_DATABASE
+      lineinfile:
+        path: /var/www/app-for-devops/.env
+        regexp: '^DB_DATABASE='
+        line: 'DB_DATABASE={{ db_name }}'
 
-    - name: Run Laravel migrations
-      become: yes
-      command: php /var/www/app-for-devops/artisan migrate
+    - name: Update DB_USERNAME
+      lineinfile:
+        path: /var/www/app-for-devops/.env
+        regexp: '^DB_USERNAME='
+        line: 'DB_USERNAME={{ db_user }}'
+
+    - name: Update DB_PASSWORD
+      lineinfile:
+        path: /var/www/app-for-devops/.env
+        regexp: '^DB_PASSWORD='
+        line: 'DB_PASSWORD={{ db_pass }}'
+
+    - name: Generate Laravel key
+      command: php artisan migrate
+      args:
+        chdir: /var/www/app-for-devops
 
   handlers:
     - name: Reload Apache
