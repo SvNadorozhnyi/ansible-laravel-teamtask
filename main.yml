@@ -170,10 +170,23 @@
       ansible.builtin.shell: npm run build
       args:
         chdir: "{{ app_directory }}"
+    
+    - name: Get your IP address
+      shell: dig +short myip.opendns.com @resolver1.opendns.com
+      register: my_ip
 
-    - name: Copy Apache virtual host configuration
-      template:
-        src: ./template/server.conf
+    - name: Create virtual host file
+      copy:
+        content: |
+          <VirtualHost *:80>
+              ServerName {{ my_ip.stdout }}
+              ServerAlias myapp
+              DocumentRoot /var/www/app-for-devops/public
+
+              <Directory /var/www/app-for-devops/public>
+                  AllowOverride All
+              </Directory>
+          </VirtualHost>
         dest: /etc/apache2/sites-available/app-for-devops.conf
 
     - name: Enable the virtual host
@@ -197,31 +210,31 @@
       args:
         chdir: /var/www/app-for-devops
     
-    - name: Update DB_HOST
+    - name: Update .env DB_HOST
       lineinfile:
         path: /var/www/app-for-devops/.env
         regexp: '^DB_HOST='
         line: 'DB_HOST={{ db_host }}'
 
-    - name: Update DB_DATABASE
+    - name: Update .env DB_DATABASE
       lineinfile:
         path: /var/www/app-for-devops/.env
         regexp: '^DB_DATABASE='
         line: 'DB_DATABASE={{ db_name }}'
 
-    - name: Update DB_USERNAME
+    - name: Update .env DB_USERNAME
       lineinfile:
         path: /var/www/app-for-devops/.env
         regexp: '^DB_USERNAME='
         line: 'DB_USERNAME={{ db_user }}'
 
-    - name: Update DB_PASSWORD
+    - name: Update .env DB_PASSWORD
       lineinfile:
         path: /var/www/app-for-devops/.env
         regexp: '^DB_PASSWORD='
         line: 'DB_PASSWORD={{ db_pass }}'
 
-    - name: Generate Laravel key
+    - name: Make migration
       command: php artisan migrate
       args:
         chdir: /var/www/app-for-devops
